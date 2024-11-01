@@ -3,7 +3,7 @@ import re
 from subprocess import TimeoutExpired, CalledProcessError, check_output
 import services.utils as utility
 
-
+#注释移除，统计method function lemma assertion数量
 def removed_comments(string):
     # remove all occurrences streamed comments (/*COMMENT */) from string
     code = re.sub(re.compile("/\*.*?\*/", re.DOTALL), "", string)
@@ -60,6 +60,7 @@ def count_requires(source):
     return len(occurrence)
 
 
+# 统计method/ensure等数量
 def get_all_verification_bits_count(code):
     obj = {}
     obj['method'] = count_method(code)
@@ -88,7 +89,7 @@ def get_verification_bits_count_rq3(save_map):
     code = save_map['code_response']
     return get_all_verification_bits_count(code)
 
-
+#调用dafny 这里用不到
 def get_dafny_verification_result(dfy_file_path):
     cmd_output = ""
     try:
@@ -113,7 +114,7 @@ def get_dafny_verification_result(dfy_file_path):
     else:
         return -3, -3, cmd_output  # -3,-3 type resolution or other errors
 
-
+# 把代码部分正则出来
 def parse_code(model_response):
     pattern = r'```dafny\s*\s*(.*?)\s*```'
     match = re.search(pattern, model_response, re.DOTALL)
@@ -123,16 +124,10 @@ def parse_code(model_response):
         return ""
 
 
-def verify_dfy_src(response, dfy_source_path, verification_path):
+def verify_dfy_src(response, dfy_source_path):
     # parse the response
     code = parse_code(response)
     # save the code in *.dfy file
     if not os.path.exists(dfy_source_path):
         utility.write_to_file(code, dfy_source_path)
-    # call verifier:
-    verification, errors, cmd_output = get_dafny_verification_result(dfy_source_path)
-    utility.write_to_file(cmd_output, verification_path)
-    if errors == 0:
-        return True, code
-    return False, code
-    # return true/false
+    return code

@@ -1,15 +1,15 @@
 import os
-import openai
+from openai import OpenAI
 from time import sleep
 import configparser
 import services.utils as utility
 import services.dafny_verifyer as verifier
 
 
-
+# 读取配置文件
 def get_config():
-    script_dir_path = os.path.dirname(os.getcwd())
-    config_path = os.path.join(script_dir_path, 'env.config')
+    cur_dir_path = os.getcwd()
+    config_path = os.path.join(cur_dir_path, 'env.config')
     if not (os.path.exists(config_path)):
         print("env.config not found!!")
         return
@@ -18,18 +18,21 @@ def get_config():
 
     api_config = dict()
     api_config["openai_api_key"] = config.get('DEFAULT', 'openai_api_key')
-    api_config["google_api_key"] = config.get('DEFAULT', 'google_api_key')
+    api_config["openai_base_url"] = config.get('DEFAULT','openai_base_url')
     api_config["model"] = config.get('DEFAULT', 'model')
     api_config["temp"] = float(config.get('DEFAULT', 'temp'))
 
     env_config = dict()
     env_config["K_run"] = config.get('DEFAULT', 'K_run')
     env_config["cool_down_time"] = config.get('DEFAULT', 'cool_down_time')
-    env_config["data_path"] = config.get('DEFAULT', 'data_path')
-    env_config["base_output_path"] = config.get('DEFAULT', 'base_output_path')
+    data_path = os.path.join(cur_dir_path, config.get('DEFAULT','data_path'))
+    env_config["data_path"] = data_path
+    base_output_path = os.path.join(cur_dir_path,config.get('DEFAULT', 'base_output_path'))
+    env_config["base_output_path"] = base_output_path
+
     return api_config, env_config
 
-
+# 每个任务生成save_map 包括task内容，k，问题描述，response，生成的统计(Json), Dafny代码(.dfy为结尾)两个文件
 def get_output_paths(_task, _temp, _K, _model, _base_path):
     out_paths = dict()
     common_path = "task_id" + "_" + str(_task['task_id']) + "-" + _model + "-" + "temp_" + str(
@@ -42,33 +45,42 @@ def get_output_paths(_task, _temp, _K, _model, _base_path):
 
 
 def get_context_less_prompt_template(_task):
-    script_dir_path = os.path.dirname(os.getcwd())
-    prompt_path = os.path.join(script_dir_path, 'Scripts/prompts/CONTEXTLESS_TEMPLATE.file')
+    cur_path = os.getcwd()
+    prompt_path = os.path.join(cur_path, 'templates/CONTEXTLESS_TEMPLATE.file')
     if not (os.path.exists(prompt_path)):
-        print("Scripts/prompts/CONTEXTLESS_TEMPLATE.file not found!!")
+        print("file not found!!")
         return
     template = utility.read_file(prompt_path)
     final_prompt = template.format(task_description=_task['task_description'])
-    # print(final_prompt)
+    print(final_prompt)
     return final_prompt
 
 
-def invoke_gpt4(_task, _temp, _key):
-    openai.api_key = _key
+def invoke_gpt4(_task, _temp, _key, _url):
     prompt_ = get_context_less_prompt_template(_task)
-    messages = [{"role": "user", "content": prompt_}]
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=messages,
+    client = OpenAI(
+        # This is the default and can be omitted
+        api_key=_key,
+        base_url=_url
+    )
+    completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "user",
+                "content": prompt_,
+            }
+        ],
+        model="gpt-4o-mini",
         temperature=_temp
     )
-    result = response.choices[0].message['content']
+    result = completion.choices[0].message.content
+    print(result)
     return result
 
 
 
 
-def prepare_model_response(_task, _temp, _K, _res, _model, _dafny_code, _isVerified, _verification_bits):
+def prepare_model_response(_task, _temp, _K, _res, _model, _dafny_code,  _verification_bits):
     saved_map = {
         "id": _task['task_id'],
         "K": _K,
@@ -78,7 +90,6 @@ def prepare_model_response(_task, _temp, _K, _res, _model, _dafny_code, _isVerif
         "model": _model,
         "response": _res,
         "dafny_code": _dafny_code,
-        "isVerified": _isVerified,
         "verification_bits": _verification_bits
     }
     return saved_map
@@ -86,11 +97,13 @@ def prepare_model_response(_task, _temp, _K, _res, _model, _dafny_code, _isVerif
 
 def execute_context_less_prompt(_api_config, _env_config):
     all_response = []
-    tasks = utility.load_json(_env_config['data_path'])
+    test_path = os.path.join(_env_config['data_path'],"test-task.json")
+    tasks = utility.load_json(test_path)
     model = _api_config['model']
     for t in tasks:
         task = tasks[t]
         print("Prompting Task: " + task['task_id'])
+        # k_run指的是尝试k次，源代码逻辑尝试到verify出正确的就停止了。
         for run_count in range(1, int(_env_config["K_run"]) + 1):
             output_paths = get_output_paths(_task=task, _temp=_api_config["temp"], _K=run_count,
                                             _model=model,
@@ -98,32 +111,26 @@ def execute_context_less_prompt(_api_config, _env_config):
             try:
                 response = ""
                 if model == "gpt-4":
-                    response = invoke_gpt4(_task=task, _temp=_api_config['temp'], _key=_api_config['openai_api_key'])
-                if model == "palm-2":
-                    response = invoke_palm2(_task=task, _temp=_api_config['temp'], _key=_api_config['google_api_key'])
+                    response = invoke_gpt4(_task=task, _temp=_api_config['temp'],
+                                           _key=_api_config['openai_api_key'], _url=_api_config['openai_base_url'])
 
-                isVerified, parsedCode = verifier.verify_dfy_src(response, output_paths['dfy_src_path'],
-                                                                 output_paths['verification_path'])
+                parsedCode = verifier.verify_dfy_src(response, output_paths['dfy_src_path'])
                 verification_bits = verifier.get_all_verification_bits_count(parsedCode)
                 saved_map = prepare_model_response(_task=task, _temp=_api_config['temp'], _K=run_count, _res=response,
-                                                   _model=model, _dafny_code=parsedCode, _isVerified=isVerified,
+                                                   _model=model, _dafny_code=parsedCode,
                                                    _verification_bits=verification_bits)
-                if isVerified:
-                    utility.save_to_json(saved_map, output_paths["saved_path"])
-                    all_response.append(saved_map)
-                    print("Task:" + task['task_id'] + " Verified @K=" + str(run_count) + ", saved, ignore next runs.")
-                    break
+                utility.save_to_json(saved_map, output_paths["saved_path"])
+                all_response.append(saved_map)
                 if run_count == int(_env_config["K_run"]):
                     all_response.append(saved_map)
                 utility.save_to_json(saved_map, output_paths["saved_path"])
-                print("Task:" + task['task_id'] + " Not Verified, saved, continue next runs.")
             except Exception as e:
                 print("Error while processing => " + task['task_id'] + "in temperature =>" + str(
                     _api_config['temp']) + str(e))
             sleep(int(_env_config['cool_down_time']))
     utility.save_to_json(all_response,
                          os.path.join(_env_config["base_output_path"],
-                                      "rq1-contextleass-prompting-" + model + ".json"))
+                                      "gpt4-contextleass-prompting-" + model + ".json"))
 
 
 if __name__ == '__main__':
